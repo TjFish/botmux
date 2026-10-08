@@ -1810,6 +1810,20 @@ export interface BotConfig {
    */
   blockedUsers?: string[];
   /**
+   * grantUsers: global sender allow-list that gates ALL talk sources.
+   *
+   * When non-empty, ONLY open_ids in this list can trigger turns — regardless
+   * of oncall, chatGrants, p2pOpen, or any other talk source. Sits right after
+   * the blockedUsers check and BEFORE all permissive legs in evaluateTalk.
+   * Administrators (resolvedAllowedUsers) are always allowed even if not
+   * explicitly listed, mirroring blockedUsers' admin-guard semantics.
+   *
+   * Empty / undefined = feature disabled (no effect). This composes naturally
+   * with blockedUsers: whitelist gates who CAN talk, blacklist denies specific
+   * people within the whitelist (if listed).
+   */
+  grantUsers?: string[];
+  /**
    * Owner's native app-scoped `open_id` (`ou_…`), captured at setup from the
    * device-flow scanner identity. UNLIKE `allowedUsers` (which may hold `on_`/
    * email entries needing a contact-API resolve every boot), this is stored raw
@@ -2362,6 +2376,9 @@ export interface BotState {
   /** blockedUsers 原始条目解析后的本 app open_id（纯否决腿，启动期 best-effort 解析，
    *  缺省 [] = 不否决任何人）。与 resolvedAllowedUsers 共用同一 sidecar 缓存。 */
   resolvedBlockedUsers: string[];
+  /** resolvedGrantUsers: grantUsers entries resolved to app-scoped open_ids.
+   *  Empty = feature off. Resolution shares the same sidecar cache as allowedUsers/blockedUsers. */
+  resolvedGrantUsers: string[];
 }
 
 export type NativeSubagentRuntimeConfigState =
@@ -2593,6 +2610,7 @@ export function registerBot(cfg: BotConfig): BotState {
     resolvedAllowedUsers: [...(cfg.allowedUsers ?? [])],
     rawAllowedUserResolution: new Map(),
     resolvedBlockedUsers: [],
+    resolvedGrantUsers: [],
   };
   // p2pOpen 是一次显式的权限边界声明（进入限制态），但它只授 talk。没有 allowedUsers 就
   // 没有任何人能 operate（/restart、/cd、卡片按钮全锁死），也没有 owner 可以处置授权卡 ——
@@ -3931,6 +3949,9 @@ export function parseBotConfigsFromText(jsonText: string): BotConfig[] {
       // 解析缓存换成本 app open_id；非数组 / 空归一为 undefined，保持 bots.json 干净。
       blockedUsers: Array.isArray(entry.blockedUsers)
         ? (normalizeStringList(entry.blockedUsers) || undefined)
+        : undefined,
+      grantUsers: Array.isArray(entry.grantUsers)
+        ? (normalizeStringList(entry.grantUsers) || undefined)
         : undefined,
       // Only a well-formed native open_id is trusted; anything else (stray on_/
       // email/garbage) is dropped so the fail-safe recipient can never be a

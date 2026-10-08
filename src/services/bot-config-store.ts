@@ -660,7 +660,11 @@ export async function setBotBlockedUsers(
   }
   writeAllowedUsersResolveCache(config.session.dataDir, larkAppId, {
     map,
-    retainKeys: [...new Set([...(bot.config.allowedUsers ?? []), ...rawEntries])],
+    retainKeys: [...new Set([
+      ...(bot.config.allowedUsers ?? []),
+      ...(bot.config.blockedUsers ?? []),
+      ...rawEntries,
+    ])],
     deleteEntries: definitiveEntries,
   });
   logger.info(`[config:${larkAppId}] blockedUsers updated: ${rawEntries.length} entries, ${resolved.length} resolved`);
@@ -730,6 +734,63 @@ export async function removeBlockedUsers(
   bot.resolvedBlockedUsers = nextResolved;
   logger.info(`[config:${larkAppId}] blockedUsers unblocked: ${raw.length - kept.length} entries`);
   return { ok: true, raw: kept, resolved: nextResolved };
+}
+
+// ─── grantUsers (global sender allow-list) ────────────────────────────
+
+export type SetGrantUsersResult =
+  | { ok: true; raw: string[]; resolved: string[] }
+  | { ok: false; reason: 'bot_not_registered' | 'empty_resolved' | string };
+
+/**
+ * Set grantUsers (global sender allow-list, P1c).
+ * Mirror of blockedUsers: empty array clears the list; non-empty resolves
+ * entries to app-scoped open_ids via the shared sidecar cache.
+ * No admin guard needed (whitelist is allow, not deny), but empty_resolved
+ * is still rejected (misconfigured entries help nobody).
+ */
+export async function setBotGrantUsers(
+  larkAppId: string,
+  rawEntries: string[],
+): Promise<SetGrantUsersResult> {
+  let bot;
+  try { bot = getBot(larkAppId); } catch { return { ok: false, reason: 'bot_not_registered' }; }
+
+  if (rawEntries.length === 0) {
+    const r = await rmwBotEntry<null>(larkAppId, (entry) => {
+      delete entry.grantUsers;
+      return { write: true, result: null };
+    });
+    if (!r.ok) return { ok: false, reason: r.reason };
+    bot.config.grantUsers = undefined;
+    bot.resolvedGrantUsers = [];
+    logger.info(`[config:${larkAppId}] grantUsers cleared`);
+    return { ok: true, raw: [], resolved: [] };
+  }
+
+  const { resolved, map, entryStatus } = await resolveAllowedUsersWithMap(larkAppId, rawEntries);
+  if (resolved.length === 0) return { ok: false, reason: 'empty_resolved' };
+
+  const r = await rmwBotEntry<null>(larkAppId, (entry) => {
+    entry.grantUsers = rawEntries;
+    return { write: true, result: null };
+  });
+  if (!r.ok) return { ok: false, reason: r.reason };
+
+  bot.config.grantUsers = rawEntries;
+  bot.resolvedGrantUsers = resolved;
+
+  const definitiveEntries: string[] = [];
+  for (const [entry, status] of entryStatus.entries()) {
+    if (status === 'definitive') definitiveEntries.push(entry);
+  }
+  writeAllowedUsersResolveCache(config.session.dataDir, larkAppId, {
+    map,
+    retainKeys: [...new Set([...(bot.config.allowedUsers ?? []), ...rawEntries])],
+    deleteEntries: definitiveEntries,
+  });
+  logger.info(`[config:${larkAppId}] grantUsers updated: ${rawEntries.length} entries, ${resolved.length} resolved`);
+  return { ok: true, raw: rawEntries, resolved };
 }
 
 export type CoerceResult =

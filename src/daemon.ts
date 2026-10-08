@@ -28789,12 +28789,13 @@ export async function startDaemon(botIndex?: number): Promise<void> {
     // Refresh CLI version per bot's cliId
     refreshCliVersion(cfg);
 
-    // sidecar 同时承载 allowedUsers 与 blockedUsers 的 raw→ou_ 缓存：任一侧
-    // 写缓存时 retainKeys 必须是两侧原始条目的并集，否则一次 allowed 解析写回
-    // 会把 blocked 条目（可能正处于网络失败、只靠缓存存活的状态）剪光，反之亦然。
+    // sidecar 同时承载 allowedUsers、blockedUsers、grantUsers 的 raw→ou_ 缓存：
+    // 任一侧写缓存时 retainKeys 必须是三侧原始条目的并集，否则一次解析写回会把
+    // 其他侧条目（可能正处于网络失败、只靠缓存存活的状态）剪光。
     const resolveCacheRetainKeys = [...new Set([
       ...(bot.config.allowedUsers ?? bot.resolvedAllowedUsers ?? []),
       ...(bot.config.blockedUsers ?? []),
+      ...(bot.config.grantUsers ?? []),
     ])];
 
     // Resolve allowed users per bot. Skipped for apiOnly (core-only) bots:
@@ -28944,6 +28945,62 @@ export async function startDaemon(botIndex?: number): Promise<void> {
       }
       bot.resolvedBlockedUsers = blockedApplied.resolved;
       logger.info(`[${cfg.larkAppId}] Resolved blockedUsers: ${bot.resolvedBlockedUsers.join(', ') || '(empty)'}`);
+    }
+
+    // Resolve grantUsers (global sender allow-list).
+    // Same resolver + sidecar as blockedUsers. Fail-open: resolution failure
+    // (cache-only this boot) means an empty whitelist, which = feature off.
+    // apiOnly bots skip (no Lark contact API).
+    if (!cfg.apiOnly && (bot.config.grantUsers?.length ?? 0) > 0) {
+      const wlRaw = bot.config.grantUsers!;
+      const literalOuSeed: Record<string, string> = {};
+      for (const e of wlRaw) {
+        if (e.startsWith('ou_')) literalOuSeed[e] = e;
+      }
+      const wlPrevMap: Record<string, string> = {
+        ...literalOuSeed,
+        ...readAllowedUsersCache(cfg.larkAppId),
+      };
+      let wlApplied: ReturnType<typeof applyAllowedUsersResolve>;
+      if (wlRaw.some(entryNeedsContactResolve)) {
+        try {
+          const resolveResult = await resolveAllowedUsersWithMap(cfg.larkAppId, wlRaw);
+          wlApplied = applyAllowedUsersResolve({
+            rawEntries: wlRaw,
+            previousResolvedMap: wlPrevMap,
+            resolveResult,
+          });
+          writeAllowedUsersCache(cfg.larkAppId, wlApplied.map, {
+            deleteEntries: definitiveEntriesOf(resolveResult.entryStatus),
+            retainKeys: resolveCacheRetainKeys,
+          });
+          if (wlApplied.usedFallback) {
+            logger.warn(`[${cfg.larkAppId}] grantUsers resolve degraded: some entries reused from cache. Raw: ${wlRaw.join(', ')}`);
+          }
+        } catch (err: any) {
+          const throwStatus = new Map<string, EntryResolveStatus>();
+          for (const e of wlRaw) {
+            if (entryNeedsContactResolve(e)) throwStatus.set(e, 'transient');
+          }
+          wlApplied = applyAllowedUsersResolve({
+            rawEntries: wlRaw,
+            previousResolvedMap: wlPrevMap,
+            resolveResult: { resolved: [], map: new Map(), errored: true, entryStatus: throwStatus },
+          });
+          if (wlApplied.usedFallback) {
+            writeAllowedUsersCache(cfg.larkAppId, wlApplied.map, { retainKeys: resolveCacheRetainKeys });
+          }
+          logger.warn(`[${cfg.larkAppId}] grantUsers resolve failed (cache-only this boot): ${err?.message ?? err}`);
+        }
+      } else {
+        wlApplied = applyAllowedUsersResolve({
+          rawEntries: wlRaw,
+          previousResolvedMap: wlPrevMap,
+          resolveResult: { resolved: [], map: new Map(), entryStatus: new Map() },
+        });
+      }
+      bot.resolvedGrantUsers = wlApplied.resolved;
+      logger.info(`[${cfg.larkAppId}] Resolved grantUsers: ${bot.resolvedGrantUsers.join(', ') || '(empty)'}`);
     }
 
     checkAllowedChatGroupsConfig(bot);

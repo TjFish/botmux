@@ -131,7 +131,7 @@ import type {
   OpenPlatformDescriptionReadResult,
   OpenPlatformDescriptionUpdateResult,
 } from '../services/open-platform-rename.js';
-import { findConfigField, applyConfigField, coerceConfigValue, setChatFeedbackPolicy, setBotBlockedUsers, removeBlockedUsers, type SetBlockedUsersResult } from '../services/bot-config-store.js';
+import { findConfigField, applyConfigField, coerceConfigValue, setChatFeedbackPolicy, setBotBlockedUsers, removeBlockedUsers, setBotGrantUsers, type SetBlockedUsersResult, type SetGrantUsersResult } from '../services/bot-config-store.js';
 import { defaultReplyDeliveryFor, effectiveReplyDelivery, supportsTranscriptReplyDelivery } from './reply-delivery.js';
 import { traceFeedbackPolicyForDelivery } from '../services/feedback-policy-resolver.js';
 import { globalBuiltinSkillInjectionDefault, resolveSkillInjectionSupport } from '../skills/injection-mode.js';
@@ -5400,6 +5400,42 @@ ipcRoute('PUT', '/api/blocked-users', async (req, res) => {
       conflicting: result.conflicting ?? [],
     });
   }
+  if (result.reason === 'empty_resolved') {
+    return jsonRes(res, 422, { ok: false, error: 'empty_resolved' });
+  }
+  if (result.reason === 'bot_not_registered') {
+    return jsonRes(res, 404, { ok: false, error: 'bot_not_registered' });
+  }
+  return jsonRes(res, 400, { ok: false, error: result.reason });
+});
+
+// ─── grantUsers (global sender allow-list) ───────────────────────────
+
+ipcRoute('GET', '/api/grant-users', async (_req, res) => {
+  if (!cachedLarkAppId) return jsonRes(res, 503, { ok: false, error: 'larkAppId_not_set' });
+  let bot;
+  try { bot = getBot(cachedLarkAppId); } catch {
+    return jsonRes(res, 404, { ok: false, error: 'bot_not_registered' });
+  }
+  return jsonRes(res, 200, {
+    ok: true,
+    raw: bot.config.grantUsers ?? [],
+    resolved: bot.resolvedGrantUsers ?? [],
+  });
+});
+
+ipcRoute('PUT', '/api/grant-users', async (req, res) => {
+  if (!cachedLarkAppId) return jsonRes(res, 503, { ok: false, error: 'larkAppId_not_set' });
+  let body: { entries?: unknown };
+  try { body = await readJsonBody(req); }
+  catch { return jsonRes(res, 400, { ok: false, error: 'bad_json' }); }
+  const isStringArray = (v: unknown): v is string[] =>
+    Array.isArray(v) && v.every(item => typeof item === 'string');
+  if (!isStringArray(body.entries)) {
+    return jsonRes(res, 400, { ok: false, error: 'invalid_entries' });
+  }
+  const result = await setBotGrantUsers(cachedLarkAppId, body.entries);
+  if (result.ok) return jsonRes(res, 200, result);
   if (result.reason === 'empty_resolved') {
     return jsonRes(res, 422, { ok: false, error: 'empty_resolved' });
   }

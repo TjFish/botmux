@@ -1987,6 +1987,16 @@ export function evaluateTalk(
   if (senderOpenId && bot.resolvedBlockedUsers.includes(senderOpenId)) {
     return { allowed: false, reason: 'blocked' };
   }
+  // grantUsers 全局白名单硬闸：非空时仅白名单内的 open_id 能说话，
+  // 管理员（resolvedAllowedUsers）始终放行。排在 blockedUsers 之后、
+  // 所有放行腿之前——白名单非空时 oncall / chatGrants / p2pOpen 等一概不生效。
+  // 语义与 blockedUsers 对称：空 = 功能关闭。
+  if (bot.resolvedGrantUsers.length > 0) {
+    if (senderOpenId && !bot.resolvedGrantUsers.includes(senderOpenId)
+        && !allowedUsers.includes(senderOpenId)) {
+      return { allowed: false, reason: 'blocked' };
+    }
+  }
   // 会话群专用腿，**必须排在 oncall 之前**：会话群里的 oncall 绑定只是出生时为了
   // 承载 workingDir 写下的，不能当作 talk 来源（详见 evaluateSessionGroupTalk）。
   // 命中会话群时无论表不表态，都不再回落 oncall 腿。
